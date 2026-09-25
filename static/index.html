@@ -26,6 +26,9 @@
         当几句叙述实在无法同时成立时，还可使用<strong>最少撤回</strong>（最多 10 条非空约束）：
         后端按撤回行数递增搜索，给出所有<strong>撤回行数最少</strong>的原始行号组合，
         每个方案展示剩余约束的<strong>一条可行时间线</strong>；原文已可行时返回零撤回方案，撤回全部行时显示空时间线。
+        若同一事件在口述中有多个叫法，可在区间旁逐行填写<strong>事件别名</strong>（<code>事件名,同一事件的另一名称</code>）做<strong>别名归并核对</strong>：
+        后端按<strong>传递关系</strong>把名称归并为同一事件后联立原区间（<strong>同组内的区间也参与判定</strong>），
+        归并造成矛盾时给出保留<strong>原始区间行号与别名组</strong>的冲突说明，可解时展示按统一事件归并的时间线及每组原名称。
       </p>
     </header>
 
@@ -60,6 +63,26 @@
     </section>
 
     <section id="anchor-result" aria-live="polite"></section>
+
+    <section class="input-area">
+      <label for="alias-input"><strong>事件别名归并核对</strong></label>
+      <p class="muted" style="margin-top:0">
+        直接使用上方“事件区间”文本；此处每行填写 <code>事件名,同一事件的另一名称</code>，表示两个名称指同一事件。
+        后端按<strong>传递关系</strong>把名称归组（A=B、B=C ⇒ A、B、C 同组），每组取区间文本中最早出现的名称作
+        <strong>统一事件</strong>，再把原区间两端替换为统一事件联立——<strong>同组内的区间也参与判定</strong>
+        （归并后两端成为同一事件的行，要求 0 落在其区间内）。若归并造成矛盾，给出保留<strong>原始区间行号</strong>
+        与<strong>别名组</strong>的闭合矛盾链；可解时展示按统一事件归并的时间线及每组原名称。
+      </p>
+      <textarea id="alias-input" rows="4" spellcheck="false"
+        placeholder="起床,晨练&#10;出门,上班"></textarea>
+      <div class="button-row">
+        <button id="btn-alias-merge" class="primary">归并核对</button>
+        <button id="btn-alias-example">填入别名示例</button>
+        <button id="btn-alias-clear" class="ghost">清空别名</button>
+      </div>
+    </section>
+
+    <section id="alias-result" aria-live="polite"></section>
 
     <section class="input-area">
       <label for="redundancy-line"><strong>约束冗余核对</strong></label>

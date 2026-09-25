@@ -1,6 +1,7 @@
 """FastAPI 入口：提供静态页面与 /api/solve 联立求解、/api/redundancy 约束冗余核对、
 /api/compare 两版比较、/api/repair 冲突单行修订建议、/api/anchor 绝对时间锚定、
-/api/precedence 互斥说法下的先后查询、/api/withdrawals 最少撤回接口。"""
+/api/precedence 互斥说法下的先后查询、/api/withdrawals 最少撤回、
+/api/alias-merge 事件别名归并核对接口。"""
 
 from __future__ import annotations
 
@@ -15,11 +16,12 @@ from .solver import (
     find_minimum_withdrawals,
     solve,
     solve_anchored,
+    solve_aliased,
     solve_precedence,
     suggest_repairs,
 )
 
-app = FastAPI(title="口述史事件时间线核对", version="1.6.0")
+app = FastAPI(title="口述史事件时间线核对", version="1.7.0")
 
 
 class SolveRequest(BaseModel):
@@ -46,6 +48,11 @@ class PrecedenceRequest(BaseModel):
     groups: str = ""
     a: str = ""
     b: str = ""
+
+
+class AliasMergeRequest(BaseModel):
+    text: str = ""
+    aliases: str = ""
 
 
 @app.get("/api/health")
@@ -94,6 +101,13 @@ def api_withdrawals(req: SolveRequest) -> dict:
     # 最少撤回：复用区间解析与联立求解；对最多 10 条非空有效约束按撤回行数递增搜索，
     # 返回全部最少撤回原始行号组合及各方案剩余约束的一条可行时间线
     return find_minimum_withdrawals(req.text or "")
+
+
+@app.post("/api/alias-merge")
+def api_alias_merge(req: AliasMergeRequest) -> dict:
+    # 事件别名归并核对：别名按传递关系归组后用统一事件联立原区间，同组内区间也参与判定；
+    # 归并矛盾时返回保留原始区间行号与别名组的冲突说明，可解时返回归并时间线与每组原名称
+    return solve_aliased(req.text or "", req.aliases or "")
 
 
 @app.get("/")

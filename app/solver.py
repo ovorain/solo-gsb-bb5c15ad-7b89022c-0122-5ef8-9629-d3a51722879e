@@ -52,6 +52,15 @@ _derive_bound 求 t(乙) − t(甲) 的最紧下界/上界（推不出的端点�
 零撤回方案。否则按撤回行数 k=1,2,… 递增枚举 C(n,k) 个原始行号组合，第一个存在可行
 剩余子集的 k 即最少撤回数，返回该层全部可行组合（每个方案附剩余约束的一条规范化
 可行时间线，撤回全部行时时间线为空）；语法错误逐行返回。
+
+事件别名归并核对（solve_aliased）：别名文本每行“事件名,同一事件的另一名称”，
+并查集按传递关系把名称归组（A=B、B=C ⇒ A、B、C 同组），统一事件名取区间文本中
+最早出现的成员（组内成员都未出现在区间文本时取别名文本中最早出现的）。原区间两端
+替换为统一事件后复用同一套差分约束 Bellman-Ford 联立；同组内的区间（归并后两端为
+同一事件的行）成为自身约束（要求 0 落在其区间内），同样参与判定。归并造成矛盾时
+返回保留原始区间行号与所用界值的闭合矛盾链（每环附该行原始事件名）及全部别名组
+（组内原名称、依据的别名行号）；可解时返回按统一事件归并的时间线（每个事件附组内
+原名称）与逐条核对（同组内区间特别标注）。
 """
 
 from __future__ import annotations
@@ -1271,3 +1280,209 @@ def find_minimum_withdrawals(text: str) -> dict:
 
     # 理论上不可达：撤回全部行后空约束集必可行
     return {"status": "error", "errors": [{"line": None, "message": "搜索失败：未找到任何可行的撤回方案。"}]}
+
+
+# ---------- 事件别名归并核对 ----------
+
+@dataclass(frozen=True)
+class Alias:
+    line: int
+    name: str
+    other: str
+
+
+def parse_aliases(text: str) -> tuple[list[Alias], list[dict]]:
+    """按行解析事件别名：事件名,同一事件的另一名称。
+
+    返回 (有效别名, 错误列表)；空行跳过但行号保留为别名文本的原始行号。
+    两个名称都不能为空；同一行两个名称相同不构成别名，明确报错。
+    """
+    errors: list[dict] = []
+    aliases: list[Alias] = []
+
+    if not text or not text.strip():
+        return aliases, [{"line": None, "message": "别名输入为空：请粘贴“事件名,同一事件的另一名称”格式的多行文本。"}]
+
+    for line_no, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line:
+            continue  # 空行不计入校验，但行号保留为别名文本的原始行号
+
+        # 兼容中文逗号
+        parts = [p.strip() for p in line.replace("，", ",").split(",")]
+        if len(parts) != 2:
+            errors.append({
+                "line": line_no,
+                "message": f"别名第{line_no}行：应为 2 个字段（事件名,同一事件的另一名称），实际得到 {len(parts)} 个。",
+            })
+            continue
+
+        name, other = parts
+        if not name or not other:
+            errors.append({"line": line_no, "message": f"别名第{line_no}行：两个名称都不能为空。"})
+            continue
+        if name == other:
+            errors.append({
+                "line": line_no,
+                "message": f"别名第{line_no}行：两个名称相同（“{name}”），同一名称不构成别名。",
+            })
+            continue
+
+        aliases.append(Alias(line_no, name, other))
+
+    return aliases, errors
+
+
+def solve_aliased(text: str, aliases_text: str) -> dict:
+    """事件别名归并核对：按传递关系把别名归组，用归并后的统一事件联立原区间。
+
+    并查集把别名按传递关系归组（A=B、B=C ⇒ A、B、C 同组）；统一事件名取区间文本中
+    最早出现的成员（组内成员都未出现在区间文本时，取别名文本中最早出现的），使时间线
+    与矛盾链沿用整理者在区间里用过的名称。原区间两端替换为统一事件后复用同一套差分
+    约束 Bellman-Ford 联立；同组内的区间（归并后两端为同一事件的行）成为自身约束
+    （要求 0 落在其区间内），同样参与判定。
+
+    归并造成矛盾时返回闭合矛盾链：每环保留原始区间行号与所用界值，并附该行的原始
+    事件名（orig_a/orig_b）；同时返回全部别名组（组内原名称、依据的别名行号）。
+    可解时返回按统一事件归并的时间线（每个事件附组内原名称）与逐条核对（同组内区间
+    以 self 标记特别标注）。
+    """
+    rows, errors = parse_text(text)  # 区间文本复用现有校验（含空文本报错）
+    aliases, alias_errors = parse_aliases(aliases_text)
+    errors = errors + alias_errors
+    if errors:
+        return {"status": "error", "errors": errors}
+    if not rows:
+        return {
+            "status": "error",
+            "errors": [{"line": None, "message": "没有可联立的有效约束行。"}],
+        }
+
+    # 名称首次出现顺序：区间文本优先（统一事件沿用区间中出现过的名称），其次别名文本
+    interval_order: dict[str, int] = {}
+    for r in rows:
+        for n in (r.a, r.b):
+            if n not in interval_order:
+                interval_order[n] = len(interval_order)
+    alias_order: dict[str, int] = {}
+    for a in aliases:
+        for n in (a.name, a.other):
+            if n not in alias_order:
+                alias_order[n] = len(alias_order)
+
+    def sort_key(n: str) -> tuple[int, int]:
+        io = interval_order.get(n)
+        return (0, io) if io is not None else (1, alias_order.get(n, 0))
+
+    # 并查集：按传递关系把互为别名的名称归为一组
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:  # 路径压缩
+            parent[x], x = root, parent[x]
+        return root
+
+    for a in aliases:
+        ra, rb = find(a.name), find(a.other)
+        if ra != rb:
+            parent[ra] = rb
+
+    all_names = list(dict.fromkeys(list(interval_order) + list(alias_order)))
+    members_by_root: dict[str, list[str]] = {}
+    for n in all_names:
+        members_by_root.setdefault(find(n), []).append(n)
+
+    # 每条别名所在的组（用于汇总该组“依据的别名行号”）
+    alias_lines_by_root: dict[str, list[int]] = {}
+    for a in aliases:
+        alias_lines_by_root.setdefault(find(a.name), []).append(a.line)
+
+    canon_of: dict[str, str] = {}
+    members_by_canon: dict[str, list[str]] = {}
+    groups: list[dict] = []
+    for root, members in members_by_root.items():
+        members.sort(key=sort_key)
+        canonical = members[0]
+        for m in members:
+            canon_of[m] = canonical
+        members_by_canon[canonical] = members
+        if len(members) > 1:
+            groups.append({
+                "canonical": canonical,
+                "members": members,
+                "size": len(members),
+                "alias_lines": sorted(set(alias_lines_by_root.get(root, []))),
+                "in_timeline": any(m in interval_order for m in members),
+            })
+    groups.sort(key=lambda g: sort_key(g["canonical"]))
+
+    # 原区间两端替换为统一事件后联立（同组内区间成为自身约束，同样参与判定）
+    merged_rows = [Row(r.line, canon_of[r.a], canon_of[r.b], r.low, r.high) for r in rows]
+    merged_event_count = len({r.a for r in merged_rows} | {r.b for r in merged_rows})
+    result = solve_rows(merged_rows)
+
+    if result["status"] != "ok":
+        # 矛盾链每环附该原始区间行的事件名（行号唯一，直接回查）
+        line_to_row = {r.line: r for r in rows}
+        for step in result["conflict"]["steps"]:
+            row = line_to_row.get(step["line"])
+            if row is not None:
+                step["orig_a"] = row.a
+                step["orig_b"] = row.b
+        return {
+            "status": "conflict",
+            "conflict": result["conflict"],
+            "groups": groups,
+            "group_count": len(groups),
+            "alias_count": len(aliases),
+            "event_count": merged_event_count,
+            "original_event_count": len(interval_order),
+            "line_count": len(rows),
+        }
+
+    names = result["names"]
+    index = result["index"]
+    dist = result["dist"]
+    minutes = result["minutes"]
+
+    timeline = [
+        {
+            "event": names[i],
+            "members": members_by_canon[names[i]],
+            "merged": len(members_by_canon[names[i]]) > 1,
+            "minute": minutes[i],
+        }
+        for i in range(len(names))
+    ]
+    timeline.sort(key=lambda x: (x["minute"], x["event"]))
+
+    differences = []
+    for r in rows:
+        ma, mb = canon_of[r.a], canon_of[r.b]
+        differences.append({
+            "line": r.line,
+            "a": r.a,
+            "b": r.b,
+            "merged_a": ma,
+            "merged_b": mb,
+            "self": ma == mb,
+            "low": r.low,
+            "high": r.high,
+            "actual": dist[index[mb]] - dist[index[ma]],
+        })
+
+    return {
+        "status": "ok",
+        "groups": groups,
+        "group_count": len(groups),
+        "timeline": timeline,
+        "differences": differences,
+        "alias_count": len(aliases),
+        "event_count": len(names),
+        "original_event_count": len(interval_order),
+        "line_count": len(rows),
+    }

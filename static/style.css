@@ -189,6 +189,11 @@ ul.plain li { padding: 4px 0; font-size: 14px; }
 }
 .tl-name { font-size: 13px; font-weight: 600; }
 .tl-time { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* 事件别名归并：时间线上统一事件名下的组内其他原名称 */
+.tl-members { font-size: 11px; color: var(--muted); }
+
+/* 事件别名归并：同组内区间（归并后两端为同一事件）标签 */
+.tag.self-loop { background: #fbf1e4; color: #8a5a2b; }
 
 .muted { color: var(--muted); font-size: 13px; }
 .ok-text { color: var(--ok); font-weight: 600; }
