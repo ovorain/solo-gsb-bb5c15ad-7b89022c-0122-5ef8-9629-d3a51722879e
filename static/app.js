@@ -63,6 +63,31 @@ const EXAMPLE_WITHDRAWAL = [
   "睡觉,起床,360,480",
 ].join("\n");
 
+// 别名归并可行示例：区间里混用同一事件的不同名称（盥洗=洗漱、晨会=开会），
+// 第 6 行“洗漱,盥洗,-5,5”为同组内区间（归并后要求 0 落在 [-5,5]，满足），照常参与判定。
+const EXAMPLE_ALIAS_OK_TEXT = [
+  "起床,洗漱,10,30",
+  "盥洗,早饭,15,45",
+  "早饭,出门,20,60",
+  "出门,晨会,40,90",
+  "起床,开会,80,240",
+  "洗漱,盥洗,-5,5",
+].join("\n");
+const EXAMPLE_ALIAS_OK_ALIASES = [
+  "洗漱,盥洗",
+  "开会,晨会",
+].join("\n");
+
+// 别名归并矛盾示例：未归并时“洗漱”“盥洗”是两个事件、区间本身可行；
+// 别名把二者归并后，起床→洗漱→早饭→起床 构成闭合负环
+// （前两行推出早饭比起床晚 25~75 分钟，与第 3 行“起床比早饭晚 10~20”冲突）。
+const EXAMPLE_ALIAS_CONFLICT_TEXT = [
+  "起床,洗漱,10,30",
+  "盥洗,早饭,15,45",
+  "早饭,起床,10,20",
+].join("\n");
+const EXAMPLE_ALIAS_CONFLICT_ALIASES = "洗漱,盥洗";
+
 const $ = (id) => document.getElementById(id);
 const resultEl = $("result");
 const redundancyEl = $("redundancy-result");
@@ -79,6 +104,8 @@ const precGroupsEl = $("prec-groups");
 const precAEl = $("prec-a");
 const precBEl = $("prec-b");
 const withdrawEl = $("withdraw-result");
+const aliasInputEl = $("alias-input");
+const aliasEl = $("alias-result");
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -161,11 +188,9 @@ function stepBoundText(s) {
   return s.kind === "anchor" ? (s.anchor_time || String(s.bound)) : String(s.bound);
 }
 
-function renderConflict(data, target = resultEl) {
-  const c = data.conflict;
+// 闭合矛盾链的链式图：事件节点 + 行号/界值标注，最后回到起点形成闭合环
+function conflictChainHtml(c) {
   const steps = c.steps;
-
-  // 链式图：事件节点 + 行号/界值标注，最后回到起点形成闭合环
   const parts = [];
   steps.forEach((s, i) => {
     if (i === 0) parts.push(`<div class="chain-node">${esc(s.from)}</div>`);
@@ -183,6 +208,12 @@ function renderConflict(data, target = resultEl) {
       <span class="chain-arrow">⟲</span>
     </div>
     <div class="chain-node">${esc(c.closes_to)}</div>`);
+  return `<div class="chain">${parts.join("")}</div>`;
+}
+
+function renderConflict(data, target = resultEl) {
+  const c = data.conflict;
+  const steps = c.steps;
 
   const detailRows = steps.map((s) => `
     <tr>
@@ -201,7 +232,7 @@ function renderConflict(data, target = resultEl) {
     </div>
     <div class="card">
       <h3>矛盾链</h3>
-      <div class="chain">${parts.join("")}</div>
+      ${conflictChainHtml(c)}
     </div>
     <div class="card">
       <h3>涉及的原始行与上下界</h3>
@@ -650,6 +681,7 @@ $("btn-clear").addEventListener("click", () => {
   anchorEl.innerHTML = "";
   precEl.innerHTML = "";
   withdrawEl.innerHTML = "";
+  aliasEl.innerHTML = "";
   refreshLineOptions();
   inputEl.focus();
 });
@@ -661,6 +693,7 @@ inputEl.addEventListener("input", () => {
   anchorEl.innerHTML = "";      // 文本已变，旧的锚定结论作废
   precEl.innerHTML = "";        // 共同约束已变，旧的先后查询结论作废
   withdrawEl.innerHTML = "";    // 文本已变，旧的最少撤回结论作废
+  aliasEl.innerHTML = "";       // 区间已变，旧的别名归并结论作废
 });
 refreshLineOptions();
 
@@ -1119,4 +1152,186 @@ $("btn-withdraw-example").addEventListener("click", () => {
   inputEl.value = EXAMPLE_WITHDRAWAL;
   refreshLineOptions();
   findWithdrawals();
+});
+
+// ---------- 事件别名归并核对 ----------
+
+// 别名组卡片：每组统一事件名、组内原名称与是否出现在区间时间线中（可行/冲突共用）
+function aliasGroupsCardHtml(data) {
+  if (!data.groups.length) {
+    return `
+      <div class="card">
+        <h3>别名组（每组原名称）</h3>
+        <p class="muted">没有别名组。</p>
+      </div>`;
+  }
+  const rows = data.groups.map((g, i) => `
+    <tr>
+      <td class="num">${i + 1}</td>
+      <td>${esc(g.representative)}</td>
+      <td>${esc(g.members.join("、"))}</td>
+      <td>${g.in_timeline ? "在区间时间线中" : "未出现在区间中"}</td>
+    </tr>`).join("");
+  return `
+    <div class="card">
+      <h3>别名组（每组原名称）</h3>
+      <table>
+        <thead><tr>
+          <th class="num">组</th><th>统一事件</th><th>组内原名称</th><th>状态</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <p class="muted">按传递关系归并（A=B、B=C ⇒ A、B、C 同组）；统一事件名为组内最先出现的名称，
+      区间行两端与图中节点均改用统一事件名，行号保持原始行号。</p>
+    </div>`;
+}
+
+function renderAliasOk(data) {
+  const maxMinute = Math.max(...data.timeline.map((t) => t.minute));
+  const points = data.timeline.map((t) => `
+    <div class="tl-point">
+      <div class="tl-dot"></div>
+      <div class="tl-name">${esc(t.event)}</div>
+      <div class="tl-time">第 ${t.minute} 分钟</div>
+    </div>`).join("");
+
+  const tlRows = data.timeline.map((t) => `
+    <tr>
+      <td>${esc(t.event)}</td>
+      <td>${esc(t.members.join("、"))}</td>
+      <td class="num">${t.minute}</td>
+    </tr>`).join("");
+
+  const diffRows = data.differences.map((d) => {
+    const fit = d.low <= d.actual && d.actual <= d.high;
+    const mergedPair = d.same_group
+      ? `<span class="tag same">同组内</span> ${esc(d.merged_a)}`
+      : `${esc(d.merged_a)} → ${esc(d.merged_b)}`;
+    return `<tr>
+      <td class="num">${d.line}</td>
+      <td>${esc(d.a)} → ${esc(d.b)}</td>
+      <td>${mergedPair}</td>
+      <td class="num">[${d.low}, ${d.high}]</td>
+      <td class="num">${d.actual}</td>
+      <td>${fit ? '<span class="ok-text">满足</span>' : '<span style="color:var(--err)">不满足</span>'}</td>
+    </tr>`;
+  }).join("");
+
+  const withinNote = data.within_group_count
+    ? `<p class="muted">第 ${data.within_group_lines.join("、")} 行的两端归并为同一事件（同组内区间）：
+       归并后要求 0 落在该行区间内，已照常参与判定。</p>`
+    : "";
+
+  aliasEl.innerHTML = `
+    <div class="banner ok">
+      <h2>✓ 别名归并后区间无冲突</h2>
+      <p>共 ${data.alias_count} 条别名、${data.merged_group_count} 个别名组：区间文本中的
+      ${data.original_event_count} 个事件名称归并为 <strong>${data.event_count}</strong> 个统一事件，
+      ${data.line_count} 条区间约束（含 ${data.within_group_count} 条同组内区间）全部满足。
+      以下时间线以最早事件为第 0 分钟，节点为统一事件。</p>
+    </div>
+    <div class="card">
+      <h3>归并后的可行时间线</h3>
+      <div class="timeline-track">
+        <div class="tl-line"></div>
+        <div class="tl-grid">${points}</div>
+      </div>
+      <table>
+        <thead><tr><th>统一事件</th><th>组内原名称</th><th class="num">分钟（最早事件 = 0）</th></tr></thead>
+        <tbody>${tlRows}</tbody>
+      </table>
+      <p class="muted">时间跨度：0 ~ ${maxMinute} 分钟。所有事件可整体平移，差值不变。</p>
+    </div>
+    ${aliasGroupsCardHtml(data)}
+    <div class="card">
+      <h3>逐条核对（原始行号）</h3>
+      <table>
+        <thead><tr>
+          <th class="num">行号</th><th>原始事件对</th><th>归并后事件对</th>
+          <th class="num">要求区间</th><th class="num">归并后差值</th><th>结果</th>
+        </tr></thead>
+        <tbody>${diffRows}</tbody>
+      </table>
+      ${withinNote}
+    </div>`;
+}
+
+function renderAliasConflict(data) {
+  const c = data.conflict;
+  // 明细表：保留原始区间行号与原始事件名，同时给出归并后的图中方向
+  const detailRows = c.steps.map((s) => `
+    <tr>
+      <td class="num">${stepLineRef(s)}</td>
+      <td>${esc(s.row_a || s.from)} → ${esc(s.row_b || s.to)}</td>
+      <td>${esc(s.from)} → ${esc(s.to)}</td>
+      <td><span class="tag ${s.kind}">${esc(s.kind_label)}</span></td>
+      <td class="num">${esc(stepBoundText(s))}</td>
+      <td>${esc(s.relation)}</td>
+    </tr>`).join("");
+
+  aliasEl.innerHTML = `
+    <div class="banner conflict">
+      <h2>✗ 别名归并造成矛盾</h2>
+      <p>按 ${data.alias_count} 条别名归并后，归并节点联立原区间出现闭合矛盾链：下列 ${c.steps.length} 条
+      <strong>原始区间行</strong>首尾相接形成闭合环，环上界值相加为负数（<strong>${c.weight_sum} &lt; 0</strong>），
+      即推出“某事件必须早于自己”。链上行号为<strong>原始区间行号</strong>、节点名为统一事件名，
+      参与的别名组及每组原名称见下表。</p>
+    </div>
+    ${aliasGroupsCardHtml(data)}
+    <div class="card">
+      <h3>归并后的闭合矛盾链</h3>
+      ${conflictChainHtml(c)}
+    </div>
+    <div class="card">
+      <h3>涉及的原始行与上下界</h3>
+      <table>
+        <thead><tr>
+          <th class="num">行号</th><th>原始事件对</th><th>归并后方向</th><th>使用的界</th>
+          <th class="num">界值</th><th>含义</th>
+        </tr></thead>
+        <tbody>${detailRows}</tbody>
+      </table>
+      <p class="muted">“原始事件对”为该区间行在文本框中的原写法；“归并后方向”为别名归并后的图中边（统一事件名）；
+      “上界”取该行最多分钟，“下界”取该行最少分钟。</p>
+    </div>`;
+}
+
+async function checkAliases() {
+  aliasEl.innerHTML = `<div class="card muted">归并联立中…</div>`;
+  try {
+    const resp = await fetch("/api/aliases", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: inputEl.value, aliases: aliasInputEl.value }),
+    });
+    const data = await resp.json();
+    if (data.status === "ok") renderAliasOk(data);
+    else if (data.status === "conflict") renderAliasConflict(data);
+    else renderErrors(data.errors || [{ line: null, message: "未知错误。" }], aliasEl);
+  } catch (err) {
+    aliasEl.innerHTML = `
+      <div class="banner err"><h2>请求失败</h2><p>${esc(err.message)}</p></div>`;
+  }
+}
+
+$("btn-alias").addEventListener("click", checkAliases);
+$("btn-alias-example-ok").addEventListener("click", () => {
+  inputEl.value = EXAMPLE_ALIAS_OK_TEXT;
+  aliasInputEl.value = EXAMPLE_ALIAS_OK_ALIASES;
+  refreshLineOptions();
+  checkAliases();
+});
+$("btn-alias-example-conflict").addEventListener("click", () => {
+  inputEl.value = EXAMPLE_ALIAS_CONFLICT_TEXT;
+  aliasInputEl.value = EXAMPLE_ALIAS_CONFLICT_ALIASES;
+  refreshLineOptions();
+  checkAliases();
+});
+$("btn-alias-clear").addEventListener("click", () => {
+  aliasInputEl.value = "";
+  aliasEl.innerHTML = "";
+  aliasInputEl.focus();
+});
+aliasInputEl.addEventListener("input", () => {
+  aliasEl.innerHTML = "";  // 别名已变，旧的归并结论作废
 });

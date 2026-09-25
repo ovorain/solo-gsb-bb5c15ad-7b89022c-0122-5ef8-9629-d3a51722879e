@@ -142,6 +142,9 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .tag.range { background: #e6eef9; color: #2b5d8a; }
 .tag.unlocated { background: #f0ece2; color: var(--muted); }
 
+/* 事件别名归并核对：同组内区间标记 */
+.tag.same { background: #fbf1e4; color: var(--warn); }
+
 /* 矛盾链 */
 .chain {
   display: flex;
